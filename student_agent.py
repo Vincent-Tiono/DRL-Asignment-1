@@ -7,406 +7,409 @@ import os
 from tqdm import tqdm
 
 # Global variables
-MODEL_PATH = "q_network.pt"
+MODEL_FILE = "q_network.pt"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Hyperparameters
-EPSILON = 0.08  # Slightly reduced from 0.1 for testing to be more greedy
+EPSILON = 0.1  # For exploration during testing
 
-class DQN(nn.Module):
-    def __init__(self, state_size, action_count):
-        super(DQN, self).__init__()
-        # Enhanced network architecture with better layer sizes
-        self.layers = nn.Sequential(
-            nn.Linear(state_size, 160),  # Increased from 128
+class QNetwork(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(QNetwork, self).__init__()
+        # Increased network capacity to handle more complex state representation
+        self.network = nn.Sequential(
+            nn.Linear(input_dim, 128),
             nn.ReLU(),
-            nn.Linear(160, 80),  # Increased from 64
+            nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(80, 40),  # Increased from 32
+            nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(40, action_count)
+            nn.Linear(64, output_dim)
         )
     
     def forward(self, x):
-        return self.layers(x)
+        return self.network(x)
 
-# Memory buffer for experience replay
-class ExperienceMemory:
-    def __init__(self, max_size=12000):  # Increased from 10000
-        self.max_size = max_size
-        self.experiences = []
-        self.insert_index = 0
+# Add a ReplayBuffer class for experience replay
+class ReplayBuffer:
+    def __init__(self, capacity=10000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
         
-    def store(self, state, action, reward, next_state, terminal):
-        if len(self.experiences) < self.max_size:
-            self.experiences.append(None)
-        self.experiences[self.insert_index] = (state, action, reward, next_state, terminal)
-        self.insert_index = (self.insert_index + 1) % self.max_size
+    def push(self, state, action, reward, next_state, done):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (state, action, reward, next_state, done)
+        self.position = (self.position + 1) % self.capacity
         
-    def batch_retrieve(self, batch_size):
-        batch = random.sample(self.experiences, batch_size)
-        state, action, reward, next_state, terminal = map(np.stack, zip(*batch))
-        return state, action, reward, next_state, terminal
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        state, action, reward, next_state, done = map(np.stack, zip(*batch))
+        return state, action, reward, next_state, done
     
     def __len__(self):
-        return len(self.experiences)
+        return len(self.buffer)
 
-def process_observation(observation):
+def preprocess_state(obs):
     """
-    Transform raw observation into feature vector for neural network.
-    Uses normalized and relative positions for grid-size independence.
+    Convert observation to a tensor for the neural network.
+    This function uses relative positions and features that work regardless of grid size.
     """
-    # Extract observation components
-    taxi_r, taxi_c, loc0_r, loc0_c, loc1_r, loc1_c, \
-    loc2_r, loc2_c, loc3_r, loc3_c, \
-    wall_up, wall_down, wall_right, wall_left, \
-    is_passenger_visible, is_destination_visible = observation
+    # Extract key components from the observation
+    taxi_row, taxi_col, station0_row, station0_col, station1_row, station1_col, \
+    station2_row, station2_col, station3_row, station3_col, \
+    obstacle_north, obstacle_south, obstacle_east, obstacle_west, \
+    passenger_look, destination_look = obs
     
-    # Calculate max coordinate to estimate grid dimensions
-    max_pos = max(taxi_r, taxi_c, loc0_r, loc0_c, 
-                loc1_r, loc1_c, loc2_r, loc2_c,
-                loc3_r, loc3_c)
-    grid_size = max_pos + 1  # Adding 1 because coordinates start at 0
+    # Estimate grid size based on maximum coordinate values
+    # This approach adapts to any grid size
+    max_coord = max(taxi_row, taxi_col, station0_row, station0_col, 
+                    station1_row, station1_col, station2_row, station2_col,
+                    station3_row, station3_col)
+    estimated_grid_size = max_coord + 1  # +1 because coordinates are 0-indexed
     
-    # Create normalized feature vector
+    # Create feature vector with normalized positions and relative distances
     features = [
-        # Normalized taxi coordinates
-        taxi_r / max(grid_size, 1),
-        taxi_c / max(grid_size, 1),
+        # Normalized taxi position
+        taxi_row / max(estimated_grid_size, 1),
+        taxi_col / max(estimated_grid_size, 1),
         
-        # Normalized distances to all locations
-        abs(taxi_r - loc0_r) / max(grid_size, 1),
-        abs(taxi_c - loc0_c) / max(grid_size, 1),
-        abs(taxi_r - loc1_r) / max(grid_size, 1),
-        abs(taxi_c - loc1_c) / max(grid_size, 1),
-        abs(taxi_r - loc2_r) / max(grid_size, 1),
-        abs(taxi_c - loc2_c) / max(grid_size, 1),
-        abs(taxi_r - loc3_r) / max(grid_size, 1),
-        abs(taxi_c - loc3_c) / max(grid_size, 1),
+        # Relative distances to stations (normalized)
+        # These work regardless of grid size
+        abs(taxi_row - station0_row) / max(estimated_grid_size, 1),
+        abs(taxi_col - station0_col) / max(estimated_grid_size, 1),
+        abs(taxi_row - station1_row) / max(estimated_grid_size, 1),
+        abs(taxi_col - station1_col) / max(estimated_grid_size, 1),
+        abs(taxi_row - station2_row) / max(estimated_grid_size, 1),
+        abs(taxi_col - station2_col) / max(estimated_grid_size, 1),
+        abs(taxi_row - station3_row) / max(estimated_grid_size, 1),
+        abs(taxi_col - station3_col) / max(estimated_grid_size, 1),
         
-        # Direction indicators to stations (relative positioning)
-        np.sign(taxi_r - loc0_r),
-        np.sign(taxi_c - loc0_c),
-        np.sign(taxi_r - loc1_r),
-        np.sign(taxi_c - loc1_c),
-        np.sign(taxi_r - loc2_r),
-        np.sign(taxi_c - loc2_c),
-        np.sign(taxi_r - loc3_r),
-        np.sign(taxi_c - loc3_c),
+        # Directional indicators to stations
+        # These help the agent learn directional movement
+        np.sign(taxi_row - station0_row),
+        np.sign(taxi_col - station0_col),
+        np.sign(taxi_row - station1_row),
+        np.sign(taxi_col - station1_col),
+        np.sign(taxi_row - station2_row),
+        np.sign(taxi_col - station2_col),
+        np.sign(taxi_row - station3_row),
+        np.sign(taxi_col - station3_col),
         
-        # Wall/obstacle indicators and status flags
-        float(wall_up),
-        float(wall_down), 
-        float(wall_right),
-        float(wall_left),
-        float(is_passenger_visible),
-        float(is_destination_visible)
+        # Obstacles and status indicators
+        float(obstacle_north),
+        float(obstacle_south), 
+        float(obstacle_east),
+        float(obstacle_west),
+        float(passenger_look),
+        float(destination_look)
     ]
     
     return torch.FloatTensor(features).to(DEVICE)
 
 def get_action(obs):
     """
-    Determines the best action for a given observation.
-    Uses the trained neural network with epsilon-greedy exploration.
+    Takes an observation as input and returns an action (0-5).
+    Uses the trained Q-network to select the best action.
     """
-    # Lazily load model on first call
+    # Load model if it exists and hasn't been loaded yet
     if not hasattr(get_action, "model"):
-        if os.path.exists(MODEL_PATH):
-            get_action.model = DQN(24, 6).to(DEVICE)
-            get_action.model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+        if os.path.exists(MODEL_FILE):
+            get_action.model = QNetwork(24, 6).to(DEVICE)  # Updated input dimension
+            get_action.model.load_state_dict(torch.load(MODEL_FILE, map_location=DEVICE))
             get_action.model.eval()
         else:
-            # Return random action if model doesn't exist
+            # If model doesn't exist, return random actions
             return random.choice([0, 1, 2, 3, 4, 5])
     
     # Epsilon-greedy policy for exploration during testing
-    if random.random() < EXPLORATION_RATE:
+    if random.random() < EPSILON:
         return random.choice([0, 1, 2, 3, 4, 5])
     
-    # Get network prediction for best action
-    state_tensor = process_observation(obs)
+    # Preprocess state and get Q-values
+    state_tensor = preprocess_state(obs)
     with torch.no_grad():
-        action_values = get_action.model(state_tensor)
+        q_values = get_action.model(state_tensor)
     
-    # Return action with highest predicted value
-    return torch.argmax(action_values).item()
+    # Return action with highest Q-value
+    return torch.argmax(q_values).item()
 
-def enhance_reward(obs, next_obs, action, reward):
+def shape_reward(obs, next_obs, action, reward):
     """
-    Implements reward shaping to improve learning efficiency.
-    Works with variable grid sizes by using relative metrics.
+    Apply reward shaping to guide the agent toward optimal behavior.
+    Works with any grid size.
     """
-    # Extract observation details
-    taxi_r, taxi_c, s0_r, s0_c, s1_r, s1_c, s2_r, s2_c, s3_r, s3_c, \
-    wall_up, wall_down, wall_right, wall_left, has_passenger, has_destination = obs
+    # Extract information from observations
+    taxi_row, taxi_col, s0_row, s0_col, s1_row, s1_col, s2_row, s2_col, s3_row, s3_col, \
+    obstacle_north, obstacle_south, obstacle_east, obstacle_west, passenger_look, destination_look = obs
     
-    next_taxi_r, next_taxi_c, _, _, _, _, _, _, _, _, \
-    _, _, _, _, next_has_passenger, next_has_destination = next_obs
+    next_taxi_row, next_taxi_col, _, _, _, _, _, _, _, _, \
+    _, _, _, _, next_passenger_look, next_destination_look = next_obs
     
-    modified_reward = reward
-    stations = [(s0_r, s0_c), (s1_r, s1_c), (s2_r, s2_c), (s3_r, s3_c)]
+    shaped_reward = reward
+    stations = [(s0_row, s0_col), (s1_row, s1_col), (s2_row, s2_col), (s3_row, s3_col)]
     
-    # Initialize state tracking variables
-    if not hasattr(enhance_reward, "position_history"):
-        enhance_reward.position_history = []
-        enhance_reward.prev_action = None
-        enhance_reward.repeat_action_count = 0
-        enhance_reward.passenger_onboard = False
-        enhance_reward.prev_passenger_dist = float('inf')
-        enhance_reward.prev_destination_dist = float('inf')
-        enhance_reward.discovered_stations = set()
+    # Initialize state tracking if not already done
+    if not hasattr(shape_reward, "previous_positions"):
+        shape_reward.previous_positions = []
+        shape_reward.last_action = None
+        shape_reward.action_count = 0
+        shape_reward.passenger_picked = False
+        shape_reward.last_passenger_distance = float('inf')
+        shape_reward.last_destination_distance = float('inf')
+        shape_reward.visited_stations = set()
     
-    # Update passenger status when picked up
-    if has_passenger == 1 and action == 4 and reward > 0:
-        enhance_reward.passenger_onboard = True
+    # Track if passenger has been picked up
+    if passenger_look == 1 and action == 4 and reward > 0:
+        shape_reward.passenger_picked = True
     
-    # Add exploration bonus for discovering new stations
-    current_pos = (taxi_r, taxi_c)
+    # Reward for exploring stations (helps with any grid size)
+    current_position = (taxi_row, taxi_col)
     for station in stations:
-        if abs(taxi_r - station[0]) + abs(taxi_c - station[1]) <= 1:
-            if station not in enhance_reward.discovered_stations:
-                enhance_reward.discovered_stations.add(station)
-                modified_reward += 2.5  # Increased from 2.0 to encourage exploration
+        if abs(taxi_row - station[0]) + abs(taxi_col - station[1]) <= 1:
+            if station not in shape_reward.visited_stations:
+                shape_reward.visited_stations.add(station)
+                shaped_reward += 2.0  # Reward for visiting a new station
     
-    # PHASE 1: SEEKING AND PICKING UP PASSENGER
-    if not enhance_reward.passenger_onboard:
-        # Find closest station
-        min_dist = float('inf')
+    # PHASE 1: FINDING AND PICKING UP PASSENGER
+    if not shape_reward.passenger_picked:
+        # Calculate Manhattan distance to all stations
+        min_distance = float('inf')
         for station in stations:
-            dist = abs(taxi_r - station[0]) + abs(taxi_c - station[1])
-            min_dist = min(min_dist, dist)
+            distance = abs(taxi_row - station[0]) + abs(taxi_col - station[1])
+            min_distance = min(min_distance, distance)
         
-        # Progress reward for approaching stations
-        if min_dist < enhance_reward.prev_passenger_dist:
-            modified_reward += 0.7  # Increased from 0.5
-        enhance_reward.prev_passenger_dist = min_dist
+        # Reward for getting closer to any station (helps exploration)
+        if min_distance < shape_reward.last_passenger_distance:
+            shaped_reward += 0.5
+        shape_reward.last_passenger_distance = min_distance
         
         # Reward for discovering passenger
-        if has_passenger == 0 and next_has_passenger == 1:
-            modified_reward += 12.0  # Increased from 10.0
+        if passenger_look == 0 and next_passenger_look == 1:
+            shaped_reward += 10.0
         
-        # Reward for successful pickup
-        if has_passenger == 1 and action == 4 and reward > 0:
-            modified_reward += 25.0  # Increased from 20.0
+        # Reward for picking up passenger when visible
+        if passenger_look == 1 and action == 4 and reward > 0:
+            shaped_reward += 20.0
         
-        # Penalty for invalid pickup attempts
-        if has_passenger == 0 and action == 4:
-            modified_reward -= 3.5  # Increased from 3.0
+        # Penalty for attempting pickup when no passenger is visible
+        if passenger_look == 0 and action == 4:
+            shaped_reward -= 3.0
     
     # PHASE 2: DELIVERING PASSENGER
     else:
         # Reward for discovering destination
-        if has_destination == 0 and next_has_destination == 1:
-            modified_reward += 12.0  # Increased from 10.0
+        if destination_look == 0 and next_destination_look == 1:
+            shaped_reward += 10.0
         
-        # Reward for successful dropoff
-        if has_destination == 1 and action == 5 and reward > 0:
-            modified_reward += 25.0  # Increased from 20.0
+        # Reward for dropping off at destination
+        if destination_look == 1 and action == 5 and reward > 0:
+            shaped_reward += 20.0
         
-        # Penalty for invalid dropoff attempts
-        if has_destination == 0 and action == 5:
-            modified_reward -= 3.5  # Increased from 3.0
+        # Penalty for attempting dropoff when not at destination
+        if destination_look == 0 and action == 5:
+            shaped_reward -= 3.0
         
-        # Find closest station
-        min_dist = float('inf')
+        # Calculate Manhattan distance to all stations
+        min_distance = float('inf')
         for station in stations:
-            dist = abs(taxi_r - station[0]) + abs(taxi_c - station[1])
-            min_dist = min(min_dist, dist)
+            distance = abs(taxi_row - station[0]) + abs(taxi_col - station[1])
+            min_distance = min(min_distance, distance)
         
-        # Progress reward for approaching stations
-        if min_dist < enhance_reward.prev_destination_dist:
-            modified_reward += 0.7  # Increased from 0.5
-        enhance_reward.prev_destination_dist = min_dist
+        # Reward for getting closer to any station (helps find destination)
+        if min_distance < shape_reward.last_destination_distance:
+            shaped_reward += 0.5
+        shape_reward.last_destination_distance = min_distance
     
-    # MOVEMENT EFFICIENCY REWARDS/PENALTIES
+    # GENERAL MOVEMENT REWARDS/PENALTIES
     
-    # Penalty for hitting walls
-    if action < 4 and taxi_r == next_taxi_r and taxi_c == next_taxi_c:
-        modified_reward -= 1.2  # Increased from 1.0
+    # Penalty for hitting walls (no movement despite action)
+    if action < 4 and taxi_row == next_taxi_row and taxi_col == next_taxi_col:
+        shaped_reward -= 1.0
     
-    # Anti-looping penalty based on position history
-    enhance_reward.position_history.append(current_pos)
-    if len(enhance_reward.position_history) > 12:  # Increased from 10
-        enhance_reward.position_history.pop(0)
+    # Penalty for revisiting the same position multiple times (anti-looping)
+    shape_reward.previous_positions.append(current_position)
+    if len(shape_reward.previous_positions) > 10:
+        shape_reward.previous_positions.pop(0)
     
-    # Count position repetitions
-    pos_repetitions = enhance_reward.position_history.count(current_pos)
-    if pos_repetitions > 2:
-        modified_reward -= 0.4 * pos_repetitions  # Increased from 0.3
+    # Count position occurrences in recent history
+    position_count = shape_reward.previous_positions.count(current_position)
+    if position_count > 2:
+        shaped_reward -= 0.3 * position_count
     
-    # Penalize oscillating behaviors
-    if enhance_reward.prev_action is not None:
-        if (action == 0 and enhance_reward.prev_action == 1) or \
-           (action == 1 and enhance_reward.prev_action == 0) or \
-           (action == 2 and enhance_reward.prev_action == 3) or \
-           (action == 3 and enhance_reward.prev_action == 2):
-            enhance_reward.repeat_action_count += 1
-            if enhance_reward.repeat_action_count > 1:
-                modified_reward -= 0.7 * enhance_reward.repeat_action_count  # Increased from 0.5
+    # Penalty for action oscillation
+    if shape_reward.last_action is not None:
+        if (action == 0 and shape_reward.last_action == 1) or \
+           (action == 1 and shape_reward.last_action == 0) or \
+           (action == 2 and shape_reward.last_action == 3) or \
+           (action == 3 and shape_reward.last_action == 2):
+            shape_reward.action_count += 1
+            if shape_reward.action_count > 1:
+                shaped_reward -= 0.5 * shape_reward.action_count
         else:
-            enhance_reward.repeat_action_count = 0
+            shape_reward.action_count = 0
     
-    # Store current action for next comparison
-    enhance_reward.prev_action = action
+    # Update last action
+    shape_reward.last_action = action
     
-    return modified_reward
+    return shaped_reward
 
-def train_taxi_agent(num_episodes=12000, discount_factor=0.99, batch_size=96):
+def train_agent(num_episodes=10000, gamma=0.99, batch_size=64):
     """
-    Train the agent using enhanced DQN approach with optimized parameters.
+    Train the agent using DQN with improved parameters and reward shaping.
     """
     from simple_custom_taxi_env import SimpleTaxiEnv
     
-    # Create environment
+    # Initialize environment
     env = SimpleTaxiEnv()
     
-    # Initialize networks
-    policy_network = DQN(24, 6).to(DEVICE)
-    target_network = DQN(24, 6).to(DEVICE)
-    target_network.load_state_dict(policy_network.state_dict())
-    target_network.eval()
+    # Initialize Q-networks (policy and target)
+    policy_net = QNetwork(24, 6).to(DEVICE)  # Updated input dimension
+    target_net = QNetwork(24, 6).to(DEVICE)
+    target_net.load_state_dict(policy_net.state_dict())
+    target_net.eval()
     
-    # Enhanced optimizer with tuned learning rate
-    optimizer = optim.Adam(policy_network.parameters(), lr=0.0008)  # Reduced from 0.001
-    loss_function = nn.SmoothL1Loss()  # Same as HuberLoss but explicitly named
+    # Initialize optimizer with appropriate learning rate
+    optimizer = optim.Adam(policy_net.parameters(), lr=0.001)
+    criterion = nn.HuberLoss()
     
-    # Initialize experience buffer
-    memory = ExperienceMemory(capacity=120000)  # Increased from 100000
+    # Initialize replay buffer
+    replay_buffer = ReplayBuffer(capacity=100000)
     
-    # Training hyperparameters
-    start_epsilon = 1.0
-    min_epsilon = 0.008  # Reduced from 0.01
-    epsilon_decay = 0.9998  # Slower decay from 0.9999
-    target_update_freq = 4  # More frequent updates from 5
+    # Training parameters
+    epsilon = 1.0
+    epsilon_min = 0.01
+    epsilon_decay = 0.9999
+    target_update_frequency = 5
     
-    # Tracking variables
-    highest_reward = -float('inf')
-    best_success_percentage = 0.0
-    loss_history = []
-    reward_history = []
+    # Training loop
+    best_reward = -float('inf')
+    best_success_rate = 0.0
+    losses = []
+    episode_rewards = []
     
-    # Success tracking
-    success_window = []
+    # For tracking progress
+    success_rate = []
     window_size = 100
     
     for episode in tqdm(range(num_episodes)):
-        observation, _ = env.reset()
-        state = process_observation(observation)
+        obs, _ = env.reset()
+        state_tensor = preprocess_state(obs)
         done = False
-        episode_reward = 0
-        episode_loss_values = []
-        step_count = 0
+        total_reward = 0
+        episode_losses = []
+        steps = 0
         
-        while not done and step_count < 200:
-            step_count += 1
+        while not done and steps < 200:
+            steps += 1
             
-            # Select action with epsilon-greedy policy
-            epsilon = max(min_epsilon, start_epsilon * (epsilon_decay ** episode))
+            # Epsilon-greedy action selection
             if random.random() < epsilon:
                 action = random.choice([0, 1, 2, 3, 4, 5])
             else:
                 with torch.no_grad():
-                    q_values = policy_network(state)
+                    q_values = policy_net(state_tensor)
                 action = torch.argmax(q_values).item()
             
-            # Execute action
-            next_observation, reward, done, _, _ = env.step(action)
-            next_state = process_observation(next_observation)
+            # Take action and observe next state
+            next_obs, reward, done, _, _ = env.step(action)
+            next_state_tensor = preprocess_state(next_obs)
             
             # Apply reward shaping
-            shaped_reward = enhance_reward(observation, next_observation, action, reward)
+            shaped_reward = shape_reward(obs, next_obs, action, reward)
             
-            # Store experience
-            memory.store(
-                state.cpu().numpy(),
+            # Store transition in replay buffer
+            replay_buffer.push(
+                state_tensor.cpu().numpy(),
                 action,
                 shaped_reward,
-                next_state.cpu().numpy(),
+                next_state_tensor.cpu().numpy(),
                 done
             )
             
-            # Track original reward for evaluation
-            episode_reward += reward
+            total_reward += reward  # Track original reward for evaluation
             
-            # Update state
-            observation = next_observation
-            state = next_state
+            # Move to next state
+            obs = next_obs
+            state_tensor = next_state_tensor
             
-            # Learn from experiences if enough samples available
-            if len(memory) >= batch_size:
-                # Sample batch
-                states, actions, rewards, next_states, dones = memory.batch_retrieve(batch_size)
+            # Train on a batch of transitions if buffer has enough samples
+            if len(replay_buffer) >= batch_size:
+                # Sample a batch from replay buffer
+                states, actions, batch_rewards, next_states, dones = replay_buffer.sample(batch_size)
                 
                 # Convert to tensors
                 states = torch.FloatTensor(states).to(DEVICE)
                 actions = torch.LongTensor(actions).to(DEVICE)
-                rewards = torch.FloatTensor(rewards).to(DEVICE)
+                batch_rewards = torch.FloatTensor(batch_rewards).to(DEVICE)
                 next_states = torch.FloatTensor(next_states).to(DEVICE)
                 dones = torch.FloatTensor(dones).to(DEVICE)
                 
-                # Get current Q values
-                current_q = policy_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+                # Compute current Q values
+                current_q_values = policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
                 
-                # Compute target Q values using Double DQN approach
+                # Compute target Q values with target network (Double DQN approach)
                 with torch.no_grad():
-                    # Select best actions according to policy network
-                    best_actions = policy_network(next_states).max(1)[1].unsqueeze(1)
-                    # Evaluate those actions using target network
-                    max_next_q = target_network(next_states).gather(1, best_actions).squeeze(1)
-                    target_q = rewards + discount_factor * max_next_q * (1 - dones)
+                    # Select actions using policy network
+                    policy_actions = policy_net(next_states).max(1)[1].unsqueeze(1)
+                    # Evaluate actions using target network
+                    next_q_values = target_net(next_states).gather(1, policy_actions).squeeze(1)
+                    target_q_values = batch_rewards + gamma * next_q_values * (1 - dones)
                 
-                # Compute loss and update weights
-                loss = loss_function(current_q, target_q)
+                # Compute loss and update
+                loss = criterion(current_q_values, target_q_values)
                 
                 optimizer.zero_grad()
                 loss.backward()
-                # Gradient clipping to prevent exploding gradients
-                torch.nn.utils.clip_grad_norm_(policy_network.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(policy_net.parameters(), max_norm=1.0)
                 optimizer.step()
                 
-                episode_loss_values.append(loss.item())
+                episode_losses.append(loss.item())
+        
+        # Decay epsilon
+        epsilon = max(epsilon_min, epsilon * epsilon_decay)
         
         # Update target network periodically
-        if (episode + 1) % target_update_freq == 0:
-            target_network.load_state_dict(policy_network.state_dict())
+        if (episode + 1) % target_update_frequency == 0:
+            target_net.load_state_dict(policy_net.state_dict())
         
         # Track metrics
-        avg_loss = np.mean(episode_loss_values) if episode_loss_values else 0
-        loss_history.append(avg_loss)
-        reward_history.append(episode_reward)
+        avg_loss = np.mean(episode_losses) if episode_losses else 0
+        losses.append(avg_loss)
+        episode_rewards.append(total_reward)
         
         # Track success rate (reward > 20 indicates successful delivery)
-        is_success = 1 if episode_reward > 20 else 0
-        success_window.append(is_success)
-        if len(success_window) > window_size:
-            success_window.pop(0)
+        success = 1 if total_reward > 20 else 0
+        success_rate.append(success)
+        if len(success_rate) > window_size:
+            success_rate.pop(0)
         
         # Calculate current success rate
-        current_success_rate = np.mean(success_window)
+        current_success_rate = np.mean(success_rate)
         
-        # Save model based on reward improvement
-        if episode_reward > highest_reward:
-            highest_reward = episode_reward
-            torch.save(policy_network.state_dict(), MODEL_PATH)
+        # Save model based on both reward and success rate
+        if total_reward > best_reward:
+            best_reward = total_reward
+            torch.save(policy_net.state_dict(), MODEL_FILE)
         
-        # Also save on success rate improvement
-        if current_success_rate > best_success_percentage and len(success_window) >= window_size/2:
-            best_success_percentage = current_success_rate
-            torch.save(policy_network.state_dict(), "best_success_" + MODEL_PATH)
+        # Also save if we have a better success rate
+        if current_success_rate > best_success_rate and len(success_rate) >= window_size/2:
+            best_success_rate = current_success_rate
+            torch.save(policy_net.state_dict(), "best_success_" + MODEL_FILE)
         
-        # Print training progress
+        # Print progress
         if (episode + 1) % 100 == 0:
-            success_percent = current_success_rate * 100
-            print(f"Episode {episode + 1}/{num_episodes}, Reward: {episode_reward:.2f}, Best: {highest_reward:.2f}, Loss: {avg_loss:.6f}, Epsilon: {epsilon:.4f}, Success Rate: {success_percent:.1f}%")
+            avg_success = current_success_rate * 100
+            print(f"Episode {episode + 1}/{num_episodes}, Reward: {total_reward:.2f}, Best: {best_reward:.2f}, Loss: {avg_loss:.6f}, Epsilon: {epsilon:.4f}, Success Rate: {avg_success:.1f}%")
     
-    # Use the model with best success rate
-    if os.path.exists("best_success_" + MODEL_PATH):
-        os.replace("best_success_" + MODEL_PATH, MODEL_PATH)
+    # At the end of training, use the model with the best success rate
+    if os.path.exists("best_success_" + MODEL_FILE):
+        os.replace("best_success_" + MODEL_FILE, MODEL_FILE)
     
-    print("Training completed and model saved successfully.")
-    return reward_history, loss_history
+    print("Training completed and model saved.")
+    return episode_rewards, losses
 
 if __name__ == "__main__":
-    # Run training when script is executed directly
-    reward_history, loss_history = train_taxi_agent(num_episodes=12000)
+    # This will only run when you execute this file directly
+    rewards_history, losses_history = train_agent(num_episodes=10000)
