@@ -20,9 +20,9 @@ class DQN(nn.Module):
         self.layers = nn.Sequential(
             nn.Linear(state_size, 160),  # Increased from 128
             nn.ReLU(),
-            nn.Linear(160, 90),  # Increased from 64
+            nn.Linear(160, 80),  # Increased from 64
             nn.ReLU(),
-            nn.Linear(90, 40),  # Increased from 32
+            nn.Linear(80, 40),  # Increased from 32
             nn.ReLU(),
             nn.Linear(40, action_count)
         )
