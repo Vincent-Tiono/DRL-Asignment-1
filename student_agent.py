@@ -13,16 +13,14 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Hyperparameters
 EPSILON = 0.1  # For exploration during testing
 
-class QNetwork(nn.Module):
+class DQN(nn.Module):
     def __init__(self, input_dim, output_dim):
-        super(QNetwork, self).__init__()
+        super(DQN, self).__init__()
         # Increased network capacity to handle more complex state representation
         self.network = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 64),
             nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
+            nn.Linear(64, 64),
             nn.ReLU(),
             nn.Linear(64, output_dim)
         )
@@ -116,7 +114,7 @@ def get_action(obs):
     # Load model if it exists and hasn't been loaded yet
     if not hasattr(get_action, "model"):
         if os.path.exists(MODEL_FILE):
-            get_action.model = QNetwork(24, 6).to(DEVICE)  # Updated input dimension
+            get_action.model = DQN(24, 6).to(DEVICE)  # Updated input dimension
             get_action.model.load_state_dict(torch.load(MODEL_FILE, map_location=DEVICE))
             get_action.model.eval()
         else:
@@ -265,8 +263,8 @@ def train_agent(num_episodes=10000, gamma=0.99, batch_size=64):
     env = SimpleTaxiEnv()
     
     # Initialize Q-networks (policy and target)
-    policy_net = QNetwork(24, 6).to(DEVICE)  # Updated input dimension
-    target_net = QNetwork(24, 6).to(DEVICE)
+    policy_net = DQN(24, 6).to(DEVICE)  # Updated input dimension
+    target_net = DQN(24, 6).to(DEVICE)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
     
