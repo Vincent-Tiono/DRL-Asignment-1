@@ -173,7 +173,7 @@ def train_agent(num_episodes=10000, gamma=0.99, batch_size=64):
             if random.random() < epsilon:
                 action = random.choice([0, 1, 2, 3, 4, 5])
             else:
-                with torch.no_grad():
+                with torch.inference_mode():
                     q_values = policy_net(state_tensor)
                 action = torch.argmax(q_values).item()
             
@@ -204,7 +204,7 @@ def train_agent(num_episodes=10000, gamma=0.99, batch_size=64):
                 
                 current_q_values = policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
                 
-                with torch.no_grad():
+                with torch.inference_mode():
                     next_action_indices = policy_net(next_states).max(1)[1]
                     next_q_values = target_net(next_states).gather(1, next_action_indices.unsqueeze(1)).squeeze(1)
                     target_q_values = rewards + gamma * next_q_values * (1 - dones)
