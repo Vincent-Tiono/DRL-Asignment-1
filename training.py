@@ -226,4 +226,4 @@ def train_agent(num_episodes=10000, gamma=0.99, batch_size=64):
             torch.save(policy_net.state_dict(), MODEL_FILE)
 
 if __name__ == "__main__":
-    train_agent(num_episodes=10000)
+    train_agent(num_episodes=1000)
