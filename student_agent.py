@@ -64,8 +64,8 @@ if not hasattr(get_action, "model"):
         get_action.model.load_state_dict(torch.load(f, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
         get_action.model.eval()
 '''
-''''
-working = -1607.94
+
+# working = -1607.94
 import torch
 import torch.nn as nn
 import os
@@ -140,8 +140,11 @@ if not hasattr(get_action, "model"):
     with open("dqn.pt", "rb") as f:
         get_action.model = QNet(11, 6).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         get_action.model.load_state_dict(torch.load(f, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
-        get_action.model.eval()''
-'''
+        get_action.model.eval()
+
+
+''' 
+Working = -8005
 
 import torch
 import torch.nn as nn
@@ -206,4 +209,4 @@ if not hasattr(get_action, "model"):
     model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
     model.eval()
     get_action.model = model
-
+'''
