@@ -34,7 +34,7 @@ def preprocess_state(obs):
 class QNetwork(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(QNetwork, self).__init__()
-        self.network = nn.Sequential(
+        self.net = nn.Sequential(
             nn.Linear(input_dim, 64),
             nn.ReLU(),
             nn.Linear(64, 64),
