@@ -145,55 +145,67 @@ if not hasattr(get_action, "model"):
 
 import torch
 import numpy as np
+import random
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_PATH = "dueling_ddqn.pt"
+MODEL_PATH = "ddqn.pt"
 
-class DuelingQNetwork(torch.nn.Module):
+class DuelingDQN(torch.nn.Module):
     def __init__(self, input_dim, output_dim):
-        super().__init__()
+        super(DuelingDQN, self).__init__()
         self.feature = torch.nn.Sequential(
             torch.nn.Linear(input_dim, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, 128),
             torch.nn.ReLU()
         )
-        self.value = torch.nn.Sequential(
+        self.value_stream = torch.nn.Sequential(
             torch.nn.Linear(128, 128),
             torch.nn.ReLU(),
             torch.nn.Linear(128, 1)
         )
-        self.advantage = torch.nn.Sequential(
+        self.advantage_stream = torch.nn.Sequential(
             torch.nn.Linear(128, 128),
             torch.nn.ReLU(),
-            torch.nn.Linear(128, output_dim)
+            torch.nn.Linear(128, 6)
         )
-        
-    def forward(self, x):
-        x = self.feature(x)
-        value = self.value(x)
-        advantage = self.advantage(x)
-        return value + advantage - advantage.mean(dim=1, keepdim=True)
 
-def get_action(obs):
-    if not hasattr(get_action, 'model'):
-        get_action.model = DuelingQNetwork(16, 6).to(DEVICE)
-        get_action.model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-        get_action.model.eval()
+    def forward(self, x):
+        features = self.feature(x)
+        values = self.value_stream(features)
+        advantages = self.advantage_stream(features)
+        return values + (advantages - advantages.mean(dim=1, keepdim=True))
+
+def process_observation(obs):
+    taxi_row, taxi_col, s0r, s0c, s1r, s1c, s2r, s2c, s3r, s3c, \
+    obs_n, obs_s, obs_e, obs_w, pass_stat, dest_stat = obs
     
-    # Process observation
-    taxi_row, taxi_col, *stations, obs_n, obs_s, obs_e, obs_w, pass_stat, dest_stat = obs
-    stations = np.array(stations).reshape(4, 2)
+    stations = [(s0r, s0c), (s1r, s1c), (s2r, s2c), (s3r, s3c)]
+    dists = [abs(taxi_row-r) + abs(taxi_col-c) for r,c in stations]
     
+    # Exactly 17 features to match training
     features = [
-        taxi_row / 20.0,
-        taxi_col / 20.0,
-        *((taxi_row - stations[:,0]) + (taxi_col - stations[:,1])) / 40.0,
+        taxi_row/4.0, taxi_col/4.0,
         obs_n, obs_s, obs_e, obs_w,
         pass_stat, dest_stat,
-        (pass_stat == 0) * np.min(np.abs(stations - np.array([[taxi_row, taxi_col]])).sum(axis=1)) / 40.0,
-        (pass_stat == 1) * np.min(np.abs(stations - np.array([[taxi_row, taxi_col]])).sum(axis=1)) / 40.0
+        *[d/8.0 for d in dists],
+        min(dists)/8.0,
+        (taxi_row - s0r)/4.0, (taxi_col - s0c)/4.0,
+        (taxi_row - s1r)/4.0, (taxi_col - s1c)/4.0
     ]
     
-    state_t = torch.FloatTensor(features).unsqueeze(0).to(DEVICE)
+    return torch.FloatTensor(features).to(DEVICE).unsqueeze(0)  # Add batch dimension
+
+def get_action(obs):
+    state = process_observation(obs)
     with torch.no_grad():
-        q_values = get_action.model(state_t)
+        q_values = get_action.model(state)
     return torch.argmax(q_values).item()
+
+# Load model once
+if not hasattr(get_action, "model"):
+    model = DuelingDQN(17, 6).to(DEVICE)
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+    model.eval()
+    get_action.model = model
+
