@@ -1,3 +1,4 @@
+'''
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -58,7 +59,84 @@ def get_action(obs):
 
 # Load model only once
 if not hasattr(get_action, "model"):
-    with open("dqnetwork.pt", "rb") as f:
+    with open("dqn.pt", "rb") as f:
         get_action.model = QNetwork(11, 6).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        get_action.model.load_state_dict(torch.load(f, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
+        get_action.model.eval()
+'''
+
+import torch
+import torch.nn as nn
+import os
+import random
+
+# Constants
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+MODEL_PATH = "dqn.pt"
+EPS = 0.05  # Reduced exploration for evaluation
+
+class QNet(nn.Module):
+    """Q-Network for DQN algorithm"""
+    def __init__(self, in_dim, out_dim, hidden_dim=128):
+        super(QNet, self).__init__()
+        self.network = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, out_dim)
+        )
+    
+    def forward(self, x):
+        return self.network(x)
+
+def extract_features(obs):
+    """Extract features from raw observation"""
+    t_row, t_col, s0_row, s0_col, s1_row, s1_col, s2_row, s2_col, s3_row, s3_col, \
+    obs_n, obs_s, obs_e, obs_w, pass_stat, dest_stat = obs
+    
+    # Calculate distances to stations
+    stations = [
+        (s0_row, s0_col),
+        (s1_row, s1_col),
+        (s2_row, s2_col),
+        (s3_row, s3_col)
+    ]
+    
+    dists = [
+        (abs(t_row - row) + abs(t_col - col)) / 20.0
+        for row, col in stations
+    ]
+    
+    # Combine features
+    features = [
+        obs_n, obs_s, obs_e, obs_w,
+        pass_stat, dest_stat,
+        *dists,
+        min(dists)
+    ]
+    
+    return torch.FloatTensor(features).to(DEVICE)
+
+# Main evaluation function
+def get_action(obs):
+    """Get action based on observation"""
+    # Epsilon-greedy exploration
+    if random.random() < EPS:
+        return random.choice([0, 1, 2, 3, 4, 5])
+    
+    # Extract features
+    state = extract_features(obs)
+    
+    # Get action from model
+    with torch.no_grad():
+        q_values = get_action.model(state)
+    
+    return torch.argmax(q_values).item()
+
+# Load model only once
+if not hasattr(get_action, "model"):
+    with open("dqn.pt", "rb") as f:
+        get_action.model = QNet(11, 6).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         get_action.model.load_state_dict(torch.load(f, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
         get_action.model.eval()
