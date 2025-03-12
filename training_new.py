@@ -12,7 +12,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class DQN(nn.Module):
     def __init__(self, in_dim, out_dim):
         super(DQN, self).__init__()
-        self.net = nn.Sequential(
+        self.network = nn.Sequential(
             nn.Linear(in_dim, 64),
             nn.ReLU(),
             nn.Linear(64, 64),
@@ -27,8 +27,9 @@ class DQN(nn.Module):
             if mod.bias is not None:
                 nn.init.uniform_(mod.bias, -0.05, 0.05)
     
+
     def forward(self, x):
-        return self.net(x)
+        return self.network(x)
 
 class ReplayBuffer:
     def __init__(self, capacity=10000):
