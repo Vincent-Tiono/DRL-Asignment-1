@@ -5,57 +5,42 @@ import torch.optim as optim
 import random
 from tqdm import tqdm
 
-# Config
-CFG = {
-    "model_path": "dqn.pt",
-    "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    "buffer_size": 50000,
-    "batch_size": 64,
-    "gamma": 0.99,
-    "lr": 0.001,
-    "episodes": 15000,
-    "eps_start": 1.0,
-    "eps_min": 0.01,
-    "eps_decay": 0.9999,
-    "target_update_freq": 5,
-    "tau": 0.001
-}
+# Global variables
+MODEL_PATH = "dqn.pt"
+DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class Network(nn.Module):
-    """Neural network for Q-learning"""
+class DQN(nn.Module):
     def __init__(self, in_dim, out_dim):
-        super(Network, self).__init__()
-        self.layers = nn.Sequential(
+        super(DQN, self).__init__()
+        self.net = nn.Sequential(
             nn.Linear(in_dim, 64),
             nn.ReLU(),
             nn.Linear(64, 64),
             nn.ReLU(),
             nn.Linear(64, out_dim)
         )
-        self._initialize_weights()
+        self.apply(self._init_weights)
     
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.uniform_(m.bias, -0.05, 0.05)
+    def _init_weights(self, mod):
+        if isinstance(mod, nn.Linear):
+            nn.init.kaiming_uniform_(mod.weight, nonlinearity='relu')
+            if mod.bias is not None:
+                nn.init.uniform_(mod.bias, -0.05, 0.05)
     
     def forward(self, x):
-        return self.layers(x)
+        return self.net(x)
 
 class Memory:
-    """Experience replay buffer"""
-    def __init__(self, capacity):
-        self.capacity = capacity
+    def __init__(self, max_size=10000):
+        self.max_size = max_size
         self.buffer = []
         self.pos = 0
         
-    def store(self, state, action, reward, next_state, done):
-        if len(self.buffer) < self.capacity:
+    def add(self, state, action, reward, next_state, done):
+        if len(self.buffer) < self.max_size:
             self.buffer.append(None)
         self.buffer[self.pos] = (state, action, reward, next_state, done)
-        self.pos = (self.pos + 1) % self.capacity
+        self.pos = (self.pos + 1) % self.max_size
         
     def get_batch(self, batch_size):
         batch = random.sample(self.buffer, batch_size)
@@ -65,275 +50,231 @@ class Memory:
     def __len__(self):
         return len(self.buffer)
 
-class StateProcessor:
-    """Process raw state to usable features"""
-    def __init__(self, device):
-        self.device = device
+def extract_features(obs):
+    # Unpack observation
+    t_row, t_col, s0_row, s0_col, s1_row, s1_col, \
+    s2_row, s2_col, s3_row, s3_col, \
+    obs_n, obs_s, obs_e, obs_w, \
+    pass_stat, dest_stat = obs
     
-    def process(self, obs):
-        # Unpack observation
-        t_row, t_col, s0_row, s0_col, s1_row, s1_col, \
-        s2_row, s2_col, s3_row, s3_col, \
-        obs_n, obs_s, obs_e, obs_w, \
-        pass_loc, dest_loc = obs
-        
-        # Get station positions
-        stations = [
-            (s0_row, s0_col),
-            (s1_row, s1_col),
-            (s2_row, s2_col),
-            (s3_row, s3_col)
-        ]
-        
-        # Calculate distances to stations
-        dists = []
-        for s_row, s_col in stations:
-            dist = abs(t_row - s_row) + abs(t_col - s_col)
-            norm_dist = dist / 20.0  # Normalize
-            dists.append(norm_dist)
-        
-        # Create feature vector
-        features = [
-            obs_n, obs_s, obs_e, obs_w,
-            pass_loc, dest_loc,
-            dists[0], dists[1], dists[2], dists[3],
-            min(dists)
-        ]
-        
-        return torch.FloatTensor(features).to(self.device), dists
+    # Get station positions
+    stations = [
+        (s0_row, s0_col),
+        (s1_row, s1_col),
+        (s2_row, s2_col),
+        (s3_row, s3_col)
+    ]
+    
+    # Calculate distances to stations
+    dists = []
+    for s_row, s_col in stations:
+        manhattan = abs(t_row - s_row) + abs(t_col - s_col)
+        norm_dist = manhattan / 20.0  
+        dists.append(norm_dist)
+    
+    # Create feature vector
+    feats = [
+        obs_n,
+        obs_s, 
+        obs_e,
+        obs_w,
+        pass_stat,
+        dest_stat,
+        dists[0],
+        dists[1],
+        dists[2],
+        dists[3],
+        min(dists)
+    ]
+    
+    return torch.FloatTensor(feats).to(DEV), dists
 
-class RewardShaper:
-    """Shape rewards to help learning"""
-    def __init__(self, processor):
-        self.processor = processor
+def calculate_reward(obs, next_obs, action, base_reward):
+    # Unpack current observation
+    t_row, t_col, s0_row, s0_col, s1_row, s1_col, \
+    s2_row, s2_col, s3_row, s3_col, \
+    obs_n, obs_s, obs_e, obs_w, \
+    pass_stat, dest_stat = obs
     
-    def shape(self, obs, next_obs, action, reward):
-        # Unpack observations
-        t_row, t_col, _, _, _, _, _, _, _, _, \
-        obs_n, obs_s, obs_e, obs_w, \
-        pass_loc, dest_loc = obs
-        
-        next_t_row, next_t_col, _, _, _, _, _, _, _, _, \
-        next_obs_n, next_obs_s, next_obs_e, next_obs_w, \
-        next_pass_loc, next_dest_loc = next_obs
-        
-        # Get distances
-        _, curr_dists = self.processor.process(obs)
-        _, next_dists = self.processor.process(next_obs)
-        
-        new_reward = reward
-        
-        # Penalty for hitting obstacles
-        if (action == 0 and obs_s == 1) or \
-           (action == 1 and obs_n == 1) or \
-           (action == 2 and obs_e == 1) or \
-           (action == 3 and obs_w == 1):
-            new_reward -= 15.0
-        
-        # Reward for clear path
-        if obs_n == 0 and obs_s == 0 and obs_e == 0 and obs_w == 0:
-            new_reward += 15
-        
-        # Progress toward/away from nearest station
-        min_curr = min(curr_dists)
-        min_next = min(next_dists)
-        
-        # Reward for getting closer to a station when no passenger
-        if pass_loc == 0:
-            if min_next < min_curr:
-                new_reward += 1.0
-            elif min_next > min_curr:
-                new_reward -= 1.0
-        
-        # Stronger reward when carrying passenger
-        if pass_loc == 1:
-            if min_next < min_curr:
-                new_reward += 2.0
-            elif min_next > min_curr:
-                new_reward -= 2.0
-        
-        # Reward for successful pickup
-        if action == 4 and pass_loc == 1 and next_pass_loc == 1:
-            new_reward += 5.0
-        
-        # Penalties for invalid actions
-        if action == 4 and pass_loc == 0:
-            new_reward -= 1.0
-        
-        if action == 5 and dest_loc == 0:
-            new_reward -= 1.0
-        
-        # Penalty for hitting walls or obstacles
-        if action < 4 and t_row == next_t_row and t_col == next_t_col:
-            new_reward -= 0.2
-        
-        return new_reward
+    # Unpack next observation
+    n_t_row, n_t_col, _, _, _, _, _, _, _, _, \
+    n_obs_n, n_obs_s, n_obs_e, n_obs_w, \
+    n_pass_stat, n_dest_stat = next_obs
+    
+    # Get distances
+    _, curr_dists = extract_features(obs)
+    _, next_dists = extract_features(next_obs)
+    
+    # Start with base reward
+    mod_reward = base_reward
+    
+    # Penalize hitting obstacles
+    if (action == 0 and obs_s == 1) or \
+       (action == 1 and obs_n == 1) or \
+       (action == 2 and obs_e == 1) or \
+       (action == 3 and obs_w == 1):
+        mod_reward -= 15.0
+    
+    # Reward open spaces
+    if obs_n == 0 and obs_s == 0 and obs_e == 0 and obs_w == 0:
+        mod_reward += 15
+    
+    # Get minimum distances
+    min_curr = min(curr_dists)
+    min_next = min(next_dists)
+    
+    # Reward/penalize for distance changes
+    if pass_stat == 0:
+        if min_next < min_curr:
+            mod_reward += 1.0
+        elif min_next > min_curr:
+            mod_reward -= 1.0
+    
+    if pass_stat == 1:
+        if min_next < min_curr:
+            mod_reward += 2.0
+        elif min_next > min_curr:
+            mod_reward -= 2.0
+    
+    # Reward/penalize pickup/dropoff actions
+    if action == 4 and pass_stat == 1 and n_pass_stat == 1:
+        mod_reward += 5.0
+    
+    if action == 4 and pass_stat == 0:
+        mod_reward -= 1.0
+    
+    if action == 5 and dest_stat == 0:
+        mod_reward -= 1.0
+    
+    # Penalize no movement
+    if action < 4 and t_row == n_t_row and t_col == n_t_col:
+        mod_reward -= 0.2
+    
+    return mod_reward
 
-class Agent:
-    """RL agent with DQN"""
-    def __init__(self, config):
-        self.cfg = config
-        self.device = config["device"]
-        self.processor = StateProcessor(self.device)
-        self.reward_shaper = RewardShaper(self.processor)
-        
-        # Networks
-        self.policy_net = Network(11, 6).to(self.device)
-        self.target_net = Network(11, 6).to(self.device)
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.target_net.eval()
-        
-        # Optimizer
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=config["lr"])
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=200, verbose=True
-        )
-        self.criterion = nn.HuberLoss(delta=1.0)
-        
-        # Memory
-        self.memory = Memory(config["buffer_size"])
-        
-        # Training params
-        self.epsilon = config["eps_start"]
-        self.eps_min = config["eps_min"]
-        self.eps_decay = config["eps_decay"]
-        self.gamma = config["gamma"]
-        self.batch_size = config["batch_size"]
-        self.tau = config["tau"]
-        self.best_reward = -float('inf')
+def update_target(target, policy, tau=0.001):
+    for t_param, p_param in zip(target.parameters(), policy.parameters()):
+        t_param.data.copy_(tau * p_param.data + (1.0 - tau) * t_param.data)
+
+def train_step(policy, target, opt, mem, batch_size, gamma, criterion):
+    states, actions, rewards, next_states, dones = mem.get_batch(batch_size)
     
-    def select_action(self, state):
-        """Select action using epsilon-greedy policy"""
-        if random.random() < self.epsilon:
-            return random.choice([0, 1, 2, 3, 4, 5])
-        else:
-            with torch.no_grad():
-                q_values = self.policy_net(state)
-            return torch.argmax(q_values).item()
+    states = torch.FloatTensor(states).to(DEV)
+    actions = torch.LongTensor(actions).to(DEV)
+    rewards = torch.FloatTensor(rewards).to(DEV)
+    next_states = torch.FloatTensor(next_states).to(DEV)
+    dones = torch.FloatTensor(dones).to(DEV)
     
-    def update_target(self):
-        """Soft update target network"""
-        for t_param, p_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
-            t_param.data.copy_(self.tau * p_param.data + (1.0 - self.tau) * t_param.data)
+    # Get current Q values
+    curr_q = policy(states).gather(1, actions.unsqueeze(1)).squeeze(1)
     
-    def learn(self):
-        """Learn from experience replay"""
-        if len(self.memory) < self.batch_size:
-            return
-        
-        # Sample batch
-        states, actions, rewards, next_states, dones = self.memory.get_batch(self.batch_size)
-        
-        # Convert to tensors
-        states = torch.FloatTensor(states).to(self.device)
-        actions = torch.LongTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).to(self.device)
-        next_states = torch.FloatTensor(next_states).to(self.device)
-        dones = torch.FloatTensor(dones).to(self.device)
-        
-        # Compute current Q values
-        curr_q = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
-        
-        # Compute next Q values (Double DQN)
+    # Get target Q values
+    with torch.no_grad():
+        next_actions = policy(next_states).max(1)[1]
+        next_q = target(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+        target_q = rewards + gamma * next_q * (1 - dones)
+    
+    # Calculate loss and update
+    loss = criterion(curr_q, target_q)
+    opt.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)
+    opt.step()
+    
+    return loss
+
+def select_action(policy, state, epsilon):
+    if random.random() < epsilon:
+        return random.choice([0, 1, 2, 3, 4, 5])
+    else:
         with torch.no_grad():
-            next_actions = self.policy_net(next_states).max(1)[1]
-            next_q = self.target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
-            target_q = rewards + self.gamma * next_q * (1 - dones)
-        
-        # Compute loss and update
-        loss = self.criterion(curr_q, target_q)
-        self.optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
-        self.optimizer.step()
-        self.scheduler.step(loss)
-    
-    def train(self, episodes):
-        """Train the agent"""
-        from simple_custom_taxi_env import SimpleTaxiEnv
-        env = SimpleTaxiEnv()
-        
-        for episode in tqdm(range(episodes)):
-            obs, _ = env.reset()
-            state_tensor, _ = self.processor.process(obs)
-            done = False
-            total_reward = 0
-            
-            # Episode loop
-            while not done:
-                # Select action
-                action = self.select_action(state_tensor)
-                
-                # Take action
-                next_obs, reward, done, _ = env.step(action)
-                next_state_tensor, _ = self.processor.process(next_obs)
-                
-                # Shape reward
-                shaped_reward = self.reward_shaper.shape(obs, next_obs, action, reward)
-                
-                # Store experience
-                self.memory.store(
-                    state_tensor.cpu().numpy(),
-                    action,
-                    shaped_reward,
-                    next_state_tensor.cpu().numpy(),
-                    done
-                )
-                
-                # Update state
-                total_reward += reward
-                obs = next_obs
-                state_tensor = next_state_tensor
-                
-                # Learn
-                self.learn()
-            
-            # Decay epsilon
-            self.epsilon = max(self.eps_min, self.epsilon * self.eps_decay)
-            
-            # Update target network
-            if (episode + 1) % self.cfg["target_update_freq"] == 0:
-                self.update_target()
-            
-            # Save best model
-            if total_reward > self.best_reward:
-                self.best_reward = total_reward
-                torch.save(self.policy_net.state_dict(), self.cfg["model_path"])
-    
-    def load_model(self, path=None):
-        """Load a trained model"""
-        if path is None:
-            path = self.cfg["model_path"]
-        self.policy_net.load_state_dict(torch.load(path, map_location=self.device))
-    
-    def get_action(self, obs):
-        """Get action from observation (for testing)"""
-        state_tensor, _ = self.processor.process(obs)
-        with torch.no_grad():
-            q_values = self.policy_net(state_tensor)
+            q_values = policy(state)
         return torch.argmax(q_values).item()
 
-def main():
-    """Main function to train agent"""
-    agent = Agent(CFG)
-    agent.train(CFG["episodes"])
-
-# For student_agent.py compatibility
-def get_action(obs):
-    """Function to get action from observation (for submission)"""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    processor = StateProcessor(device)
+def train_agent(episodes=10000, gamma=0.99, batch_size=64):
+    from simple_custom_taxi_env import SimpleTaxiEnv
     
-    # Create and load model
-    model = Network(11, 6).to(device)
-    model.load_state_dict(torch.load("dqn.pt", map_location=device))
+    # Initialize environment and networks
+    env = SimpleTaxiEnv()
+    policy = DQN(11, 6).to(DEV)
+    target = DQN(11, 6).to(DEV)
+    target.load_state_dict(policy.state_dict())
+    target.eval()
+    
+    # Initialize training components
+    opt = optim.Adam(policy.parameters(), lr=0.001)
+    sched = optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=200, verbose=True)
+    crit = nn.HuberLoss(delta=1.0)
+    mem = Memory(max_size=50000)
+    
+    # Training parameters
+    eps = 1.0
+    eps_min = 0.01
+    eps_decay = 0.9999
+    update_freq = 5
+    
+    best_reward = -float('inf')
+    
+    # Main training loop
+    for ep in tqdm(range(episodes)):
+        obs, _ = env.reset()
+        state, _ = extract_features(obs)
+        done = False
+        total_reward = 0
+        
+        # Episode loop
+        while not done:
+            # Select and execute action
+            action = select_action(policy, state, eps)
+            next_obs, reward, done, _ = env.step(action)
+            next_state, _ = extract_features(next_obs)
+            
+            # Process rewards and store experience
+            mod_reward = calculate_reward(obs, next_obs, action, reward)
+            mem.add(
+                state.cpu().numpy(),
+                action,
+                mod_reward,
+                next_state.cpu().numpy(),
+                done
+            )
+            
+            # Update tracking variables
+            total_reward += reward
+            obs = next_obs
+            state = next_state
+            
+            # Perform training if enough samples
+            if len(mem) >= batch_size:
+                loss = train_step(policy, target, opt, mem, batch_size, gamma, crit)
+                sched.step(loss)
+
+        # Update epsilon
+        eps = max(eps_min, eps * eps_decay)
+        
+        # Update target network
+        if (ep + 1) % update_freq == 0:
+            update_target(target, policy)
+        
+        # Save best model
+        if total_reward > best_reward:
+            best_reward = total_reward
+            torch.save(policy.state_dict(), MODEL_PATH)
+
+def get_action(obs):
+    # Load model
+    model = DQN(11, 6).to(DEV)
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEV))
     model.eval()
     
-    # Process state and get action
-    state_tensor, _ = processor.process(obs)
+    # Process observation
+    state_tensor, _ = extract_features(obs)
+    
+    # Get action
     with torch.no_grad():
         q_values = model(state_tensor)
+    
     return torch.argmax(q_values).item()
 
 if __name__ == "__main__":
-    main()
+    train_agent(episodes=1000)
