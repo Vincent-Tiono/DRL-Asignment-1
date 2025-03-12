@@ -11,43 +11,27 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_PATH = "ddqn.pt"
 
 # ================== Enhanced Network Architecture ==================
-class DuelingDQN(nn.Module):
+class DQN(nn.Module):
     """Dueling Double DQN with noisy layers"""
-    def __init__(self, input_dim, output_dim):
-        super(DuelingDQN, self).__init__()
+    def __init__(self, in_dim, out_dim, hidden_dim=128):
+        super(DQN, self).__init__()
         self.feature = nn.Sequential(
-            nn.Linear(input_dim, 128),  # input_dim should be 18
+            nn.Linear(in_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU()
-        )
-        
-        self.value_stream = nn.Sequential(
-            nn.Linear(128, 128),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(128, 1)
+            nn.Linear(hidden_dim, out_dim)
         )
-        
-        self.advantage_stream = nn.Sequential(
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, output_dim)
-        )
-        
-        self._initialize_weights()
-
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight)
-                nn.init.constant_(m.bias, 0)
-                
+        self.apply(self._initialize_weights)
+    
+    def _initialize_weights(self, mod):
+        if isinstance(mod, nn.Linear):
+            nn.init.kaiming_normal_(mod.weight, nonlinearity='relu')
+            if mod.bias is not None:
+                nn.init.constant_(mod.bias, 0.0)
+    
     def forward(self, x):
-        features = self.feature(x)
-        values = self.value_stream(features)
-        advantages = self.advantage_stream(features)
-        q_values = values + (advantages - advantages.mean(dim=1, keepdim=True))
-        return q_values
+        return self.feature(x)
 
 # ================== Prioritized Experience Replay ==================
 class PrioritizedReplayBuffer:
@@ -171,8 +155,8 @@ class RewardShaper:
 # ================== Training Agent ==================
 class TaxiAgent:
     def __init__(self, state_dim, action_dim):
-        self.policy_net = DuelingDQN(state_dim, action_dim).to(DEVICE)
-        self.target_net = DuelingDQN(state_dim, action_dim).to(DEVICE)
+        self.policy_net = DQN(state_dim, action_dim).to(DEVICE)
+        self.target_net = DQN(state_dim, action_dim).to(DEVICE)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         
         self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=0.00025, weight_decay=1e-5)

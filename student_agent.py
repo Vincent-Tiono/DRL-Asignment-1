@@ -144,37 +144,35 @@ if not hasattr(get_action, "model"):
 '''
 
 import torch
+import torch.nn as nn
 import numpy as np
 import random
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_PATH = "ddqn.pt"
 
-class DuelingDQN(torch.nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(DuelingDQN, self).__init__()
-        self.feature = torch.nn.Sequential(
-            torch.nn.Linear(input_dim, 128),
-            torch.nn.ReLU(),
-            torch.nn.Linear(128, 128),
-            torch.nn.ReLU()
+class DQN(nn.Module):
+    """Dueling Double DQN with noisy layers"""
+    def __init__(self, in_dim, out_dim, hidden_dim=128):
+        super(DQN, self).__init__()
+        self.feature = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, out_dim)
         )
-        self.value_stream = torch.nn.Sequential(
-            torch.nn.Linear(128, 128),
-            torch.nn.ReLU(),
-            torch.nn.Linear(128, 1)
-        )
-        self.advantage_stream = torch.nn.Sequential(
-            torch.nn.Linear(128, 128),
-            torch.nn.ReLU(),
-            torch.nn.Linear(128, 6)
-        )
-
+        self.apply(self._initialize_weights)
+    
+    def _initialize_weights(self, mod):
+        if isinstance(mod, nn.Linear):
+            nn.init.kaiming_normal_(mod.weight, nonlinearity='relu')
+            if mod.bias is not None:
+                nn.init.constant_(mod.bias, 0.0)
+    
     def forward(self, x):
-        features = self.feature(x)
-        values = self.value_stream(features)
-        advantages = self.advantage_stream(features)
-        return values + (advantages - advantages.mean(dim=1, keepdim=True))
+        return self.feature(x)
+    
 
 def process_observation(obs):
     taxi_row, taxi_col, s0r, s0c, s1r, s1c, s2r, s2c, s3r, s3c, \
@@ -204,7 +202,7 @@ def get_action(obs):
 
 # Load model once
 if not hasattr(get_action, "model"):
-    model = DuelingDQN(17, 6).to(DEVICE)
+    model = DQN(17, 6).to(DEVICE)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
     model.eval()
     get_action.model = model
