@@ -58,7 +58,7 @@ def get_action(obs):
 
 # Load model only once
 if not hasattr(get_action, "model"):
-    with open("dqn.pt", "rb") as f:
+    with open("dqnetwork.pt", "rb") as f:
         get_action.model = QNetwork(11, 6).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         get_action.model.load_state_dict(torch.load(f, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
         get_action.model.eval()

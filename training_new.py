@@ -6,7 +6,7 @@ import random
 from tqdm import tqdm
 
 # Global variables
-MODEL_PATH = "dqn.pt"
+MODEL_PATH = "dqnetwork.pt"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class DQN(nn.Module):
