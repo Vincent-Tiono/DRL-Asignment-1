@@ -32,9 +32,9 @@ def preprocess_state(obs):
     
     return torch.FloatTensor(features).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
-class QNetwork(nn.Module):
+class DQNwork(nn.Module):
     def __init__(self, input_dim, output_dim):
-        super(QNetwork, self).__init__()
+        super(DQNwork, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(input_dim, 64),
             nn.ReLU(),
@@ -60,7 +60,7 @@ def get_action(obs):
 # Load model only once
 if not hasattr(get_action, "model"):
     with open("dqn.pt", "rb") as f:
-        get_action.model = QNetwork(11, 6).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        get_action.model = DQNwork(11, 6).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         get_action.model.load_state_dict(torch.load(f, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
         get_action.model.eval()
 '''
@@ -76,10 +76,10 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_PATH = "dqn.pt"
 EPS = 0.05  # Reduced exploration for evaluation
 
-class QNet(nn.Module):
+class DQN(nn.Module):
     """Q-Network for DQN algorithm"""
     def __init__(self, in_dim, out_dim, hidden_dim=128):
-        super(QNet, self).__init__()
+        super(DQN, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.ReLU(),
@@ -138,7 +138,7 @@ def get_action(obs):
 # Load model only once
 if not hasattr(get_action, "model"):
     with open("dqn.pt", "rb") as f:
-        get_action.model = QNet(11, 6).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        get_action.model = DQN(11, 6).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         get_action.model.load_state_dict(torch.load(f, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
         get_action.model.eval()
 

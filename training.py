@@ -9,9 +9,9 @@ from tqdm import tqdm
 MODEL_FILE = "dqn.pt"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class QNetwork(nn.Module):
+class DQN(nn.Module):
     def __init__(self, input_dim, output_dim):
-        super(QNetwork, self).__init__()
+        super(DQN, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(input_dim, 64),
             nn.ReLU(),
@@ -146,8 +146,8 @@ def train_agent(num_episodes=10000, gamma=0.99, batch_size=64):
     from simple_custom_taxi_env import SimpleTaxiEnv
     
     env = SimpleTaxiEnv()
-    policy_net = QNetwork(11, 6).to(DEVICE)
-    target_net = QNetwork(11, 6).to(DEVICE)
+    policy_net = DQN(11, 6).to(DEVICE)
+    target_net = DQN(11, 6).to(DEVICE)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
     
