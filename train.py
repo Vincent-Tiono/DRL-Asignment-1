@@ -293,14 +293,14 @@ def main():
     """Main function to run training"""
     from simple_custom_taxi_env import SimpleTaxiEnv
     
-    # Initialize components
     env = SimpleTaxiEnv()
+        
     agent = Agent(state_dim=11, action_dim=6, lr=0.0005, gamma=0.99, tau=0.005)
     memory = Memory(size=100000)
     trainer = Trainer(agent, env, memory, batch_size=128)
     
     # Train agent
-    trainer.train(episodes=5000)
+    trainer.train(episodes=10000)
 
 if __name__ == "__main__":
     main()
