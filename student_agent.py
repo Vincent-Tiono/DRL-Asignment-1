@@ -65,6 +65,7 @@ if not hasattr(get_action, "model"):
         get_action.model.eval()
 '''
 
+'''
 # working = -1607.94, torch
 import torch
 import torch.nn as nn
@@ -141,73 +142,94 @@ if not hasattr(get_action, "model"):
         get_action.model = DQN(11, 6).to(DEVICE)
         get_action.model.load_state_dict(torch.load(f, map_location=DEVICE))
         get_action.model.eval()
-
-
-
-''' 
-Working = -8005
+'''
 
 import torch
 import torch.nn as nn
-import numpy as np
+import os
 import random
 
+# Constants
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_PATH = "ddqn.pt"
+MODEL_PATH = "dqn.pt"  # This model must be trained with state_dim=12
+EPS = 0.05  # Reduced exploration for evaluation
 
 class DQN(nn.Module):
-    """Dueling Double DQN with noisy layers"""
+    """Q-Network for DQN algorithm"""
     def __init__(self, in_dim, out_dim, hidden_dim=128):
         super(DQN, self).__init__()
-        self.feature = nn.Sequential(
+        self.network = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, out_dim)
         )
-        self.apply(self._initialize_weights)
-    
-    def _initialize_weights(self, mod):
-        if isinstance(mod, nn.Linear):
-            nn.init.kaiming_normal_(mod.weight, nonlinearity='relu')
-            if mod.bias is not None:
-                nn.init.constant_(mod.bias, 0.0)
     
     def forward(self, x):
-        return self.feature(x)
-    
+        return self.network(x)
 
-def process_observation(obs):
-    taxi_row, taxi_col, s0r, s0c, s1r, s1c, s2r, s2c, s3r, s3c, \
+def extract_features(obs, passenger_on=0):
+    """Extract features from raw observation and append passenger flag.
+    
+    Expected obs (16 elements):
+        taxi_row, taxi_col,
+        s0_row, s0_col,
+        s1_row, s1_col,
+        s2_row, s2_col,
+        s3_row, s3_col,
+        obs_n, obs_s, obs_e, obs_w,
+        pass_stat, dest_stat
+    
+    We compute:
+      - Four obstacle indicators: obs_n, obs_s, obs_e, obs_w
+      - Two additional env flags: pass_stat, dest_stat
+      - Four normalized Manhattan distances (each divided by 20.0)
+      - The minimum of these distances
+      - The passenger_on flag (0 or 1)
+      
+    Total state dimension = 4 + 2 + 4 + 1 + 1 = 12.
+    """
+    t_row, t_col, s0_row, s0_col, s1_row, s1_col, s2_row, s2_col, s3_row, s3_col, \
     obs_n, obs_s, obs_e, obs_w, pass_stat, dest_stat = obs
     
-    stations = [(s0r, s0c), (s1r, s1c), (s2r, s2c), (s3r, s3c)]
-    dists = [abs(taxi_row-r) + abs(taxi_col-c) for r,c in stations]
+    # Calculate Manhattan distances to the four stations
+    stations = [
+        (s0_row, s0_col),
+        (s1_row, s1_col),
+        (s2_row, s2_col),
+        (s3_row, s3_col)
+    ]
+    dists = [(abs(t_row - row) + abs(t_col - col)) / 20.0 for row, col in stations]
     
-    # Exactly 17 features to match training
     features = [
-        taxi_row/4.0, taxi_col/4.0,
-        obs_n, obs_s, obs_e, obs_w,
-        pass_stat, dest_stat,
-        *[d/8.0 for d in dists],
-        min(dists)/8.0,
-        (taxi_row - s0r)/4.0, (taxi_col - s0c)/4.0,
-        (taxi_row - s1r)/4.0, (taxi_col - s1c)/4.0
+        obs_n, obs_s, obs_e, obs_w,    # obstacles
+        pass_stat, dest_stat,          # env flags for passenger & destination
+        *dists,                       # 4 distances
+        min(dists),                   # minimum distance
+        passenger_on                # extra flag indicating if taxi is carrying a passenger
     ]
     
-    return torch.FloatTensor(features).to(DEVICE).unsqueeze(0)  # Add batch dimension
+    return torch.FloatTensor(features).to(DEVICE)
 
-def get_action(obs):
-    state = process_observation(obs)
+def get_action(obs, passenger_on=0):
+    """Get action based on observation.
+    
+    Includes an optional passenger_on parameter (default 0) to match the 12-dimensional state.
+    Uses epsilon-greedy exploration.
+    """
+    if random.random() < EPS:
+        return random.choice([0, 1, 2, 3, 4, 5])
+    
+    state = extract_features(obs, passenger_on)
     with torch.no_grad():
         q_values = get_action.model(state)
     return torch.argmax(q_values).item()
 
-# Load model once
+# Load model only once
 if not hasattr(get_action, "model"):
-    model = DQN(17, 6).to(DEVICE)
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-    model.eval()
-    get_action.model = model
-'''
+    with open(MODEL_PATH, "rb") as f:
+        # Notice state dimension is now 12 instead of 11!
+        get_action.model = DQN(12, 6).to(DEVICE)
+        get_action.model.load_state_dict(torch.load(f, map_location=DEVICE))
+        get_action.model.eval()
