@@ -64,8 +64,8 @@ if not hasattr(get_action, "model"):
         get_action.model.load_state_dict(torch.load(f, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
         get_action.model.eval()
 '''
-
-# working = -1607.94
+'''
+# working = -1607.94, torch
 import torch
 import torch.nn as nn
 import os
@@ -138,9 +138,32 @@ def get_action(obs):
 # Load model only once
 if not hasattr(get_action, "model"):
     with open("dqn.pt", "rb") as f:
-        get_action.model = DQN(11, 6).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-        get_action.model.load_state_dict(torch.load(f, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
+        get_action.model = DQN(11, 6).to(DEVICE)
+        get_action.model.load_state_dict(torch.load(f, map_location=DEVICE))
         get_action.model.eval()
+'''
+
+import numpy as np
+import pickle
+import random
+import gym
+
+with open("q_table.pkl", "rb") as f:
+    Q_table = pickle.load(f)
+
+def get_action(obs):
+    # Extract relevant features to form a key.
+    taxi_row, taxi_col, _, _, _, _, _, _, _, _, obstacle_north, obstacle_south, obstacle_east, obstacle_west, passenger_look, destination_look = obs
+    state = (obstacle_north, obstacle_south, obstacle_east, obstacle_west, passenger_look, destination_look)
+    
+    # Look up Q-values for this state if available; otherwise, use fallback.
+    if state in Q_table:
+        q_values = Q_table[state]
+    else:
+        # Fallback: return neutral Q-values if state not found.
+        q_values = [0.0] * 6
+        
+    return int(np.argmax(q_values))
 
 
 ''' 
