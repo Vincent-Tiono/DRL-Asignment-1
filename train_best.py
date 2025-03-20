@@ -320,7 +320,7 @@ def main():
     trainer = Trainer(agent, env, memory, batch_size=128)
     
     # Train the agent
-    trainer.train(episodes=10000)
+    trainer.train(episodes=30000)
 
 if __name__ == "__main__":
     main()
