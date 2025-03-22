@@ -120,7 +120,7 @@ class RewardShaper:
            (action == ACTION_NORTH and obs_n == 1) or \
            (action == ACTION_EAST  and obs_e == 1) or \
            (action == ACTION_WEST  and obs_w == 1):
-            new_reward -= 10000.0
+            new_reward -= 20.0
         
         # Reward for being in open space
         if obs_n == 0 and obs_s == 0 and obs_e == 0 and obs_w == 0:
